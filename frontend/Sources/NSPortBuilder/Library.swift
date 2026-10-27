@@ -323,8 +323,9 @@ final class GameLibrary: ObservableObject {
                 guard let other = BuildModel.titleID($0.lastPathComponent) else { return false }
                 return other >= id + 0x1000 && other < id + 0x2000 && ["nsp", "nsz"].contains($0.pathExtension.lowercased())
             }.map(\.path)
-            game.inputs["keys"] = [parent.appendingPathComponent("prod.keys"), root.appendingPathComponent("keys/prod.keys"), root.appendingPathComponent("prod.keys")]
-                .filter { FileManager.default.fileExists(atPath: $0.path) }.prefix(1).map(\.path)
+            let keys = [parent.appendingPathComponent("prod.keys"), root.appendingPathComponent("keys/prod.keys"), root.appendingPathComponent("prod.keys")]
+                .filter { FileManager.default.fileExists(atPath: $0.path) }.map(\.path) + [BuildModel.defaultKeys].compactMap { $0 }
+            game.inputs["keys"] = Array(keys.prefix(1))
             game.outputDirectory = parent.path
             if let ipa = files.first(where: { $0.pathExtension.lowercased() == "ipa" }) { game.ipaPath = ipa.path }
             result[tid] = game

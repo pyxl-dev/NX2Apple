@@ -36,7 +36,7 @@ import romfs as rfs
 
 # ---- Settings ----
 NSP_DIR = ''                            # folder holding the NSPs (empty = ask at run time)
-PROD_KEYS = ''                          # path of prod.keys (empty = ask at run time)
+PROD_KEYS = ''                          # path of prod.keys (empty = ~/.switch/prod.keys when it exists, else ask at run time)
 PACKAGE = ''                            # version packed into the IPA (empty = the newest in the folder; Mario 'v327680' i.e. 1.2.1, or 'v0')
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder); with PLATFORM 'mac-app' the output app (empty = <game name>.app in the NSP folder)
 APP_NAME = ''                           # app name on the home screen (empty = the game name in the base NSP)
@@ -317,6 +317,14 @@ def game_language(want, asked, have):
 def language_list(codes):
     names = dict(nacp.LANGUAGES)
     return ', '.join(f'{c} ({names[c]})' for c in codes)
+
+
+DEFAULT_KEYS = Path('~/.switch/prod.keys')   # where hactool, nsz and the emulators look: put the file (or a symlink to it) there once
+
+
+def default_keys():
+    p = DEFAULT_KEYS.expanduser()
+    return str(p) if p.is_file() else ''
 
 
 def ask(prompt, what):   # what: what is missing, for the error message
@@ -1861,7 +1869,7 @@ def parse_args(argv):
         description='Build an unsigned IPA or prepare an Xcode project from a game\'s NSPs; a game with no profile is surveyed and gets a provisional profile.',
         epilog='example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
     ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs (default: the NSP_DIR setting, else asked)')
-    ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else asked)')
+    ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else ~/.switch/prod.keys when it exists, else asked)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the newest in the folder)')
     ap.add_argument('-o', '--out', help='output IPA, or app with --platform mac-app (default: <the profile\'s ipa>, or <game name>.app, in the NSP folder)')
     ap.add_argument('--app-name', help='app name on the home screen (default: the game name in the base NSP)')
@@ -1937,7 +1945,7 @@ def main(args=None):
     if prepare_xcode and not keep: raise BuildError('--prepare-xcode requires --keep-extracted: Xcode builds from the extracted files')
     if args.xcode_workspace and not prepare_xcode: raise BuildError('--xcode-workspace requires --prepare-xcode')
     nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder: ', 'the NSP folder'))).resolve()
-    keys = Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
+    keys = Path(os.path.expanduser(args.keys or PROD_KEYS or default_keys() or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if not keys.is_file(): raise BuildError(f'no such file: {keys}')
     # An Intel Python (an Intel Homebrew under /usr/local) runs under Rosetta on an Apple silicon Mac, and its children prefer the

@@ -28,6 +28,13 @@ class DepState(Enum):
     OLD = 'old'          # present but unusable (a too-old interpreter, a stub launcher)
 
 
+def default_keys() -> str:
+    """~/.switch/prod.keys, where hactool, nsz and the emulators look (the NSP script's default too):
+    a file or symlink there fills prod.keys whenever a game folder holds none of its own."""
+    p = Path.home() / '.switch' / 'prod.keys'
+    return str(p) if p.is_file() else ''
+
+
 @dataclass
 class Dep:
     id: str
@@ -88,7 +95,7 @@ class Model(QObject):
         self.base_path = ''
         self.update_path = ''
         self.dlc_paths: list[str] = []
-        self.keys_path = ''
+        self.keys_path = default_keys()   # ~/.switch/prod.keys when it exists
         self.out_dir = ''
         self.ipa_path = ''
         self.archive_path = ''

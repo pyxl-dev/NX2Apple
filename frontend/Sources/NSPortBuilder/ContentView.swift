@@ -88,7 +88,7 @@ final class BuildModel: ObservableObject {
         Slot(id: "base", kind: .base, title: "data.base", optional: false),
         Slot(id: "update", kind: .update, title: "data.update", optional: true),
         Slot(id: "dlc", kind: .dlc, title: "data.dlc", optional: true),
-        Slot(id: "keys", kind: .keys, title: "data.keys", optional: false),
+        Slot(id: "keys", kind: .keys, title: "data.keys", optional: false, paths: BuildModel.defaultKeys.map { [$0] } ?? []),
     ]
     @Published var outDir = UserDefaults.standard.string(forKey: "buildOutputDirectory") ?? "" {
         didSet { UserDefaults.standard.set(outDir, forKey: "buildOutputDirectory") }
@@ -264,6 +264,13 @@ final class BuildModel: ObservableObject {
         let script = dir + "/scripts/build_ipa_from_nsp.py"
         guard let text = try? String(contentsOfFile: script, encoding: .utf8) else { return false }
         return text.contains("'--work-dir'") || text.contains("\"--work-dir\"")
+    }
+
+    /// `~/.switch/prod.keys`, where hactool, nsz and the emulators look (the NSP script's default too):
+    /// a file or symlink there fills the keys slot whenever a game folder holds no prod.keys of its own.
+    nonisolated static var defaultKeys: String? {
+        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".switch/prod.keys")
+        return FileManager.default.fileExists(atPath: path) ? path : nil
     }
 
     nonisolated static func findRepo() -> String {
@@ -781,7 +788,7 @@ final class BuildModel: ObservableObject {
         updateSlot("base") { $0.paths = found.base.map { [$0] } ?? []; $0.problem = found.base == nil ? "data.noBase" : "" }
         updateSlot("update") { $0.paths = found.update.map { [$0] } ?? []; $0.problem = "" }
         updateSlot("dlc") { $0.paths = found.dlc; $0.problem = "" }
-        updateSlot("keys") { $0.paths = found.keys.map { [$0] } ?? []; $0.problem = "" }
+        updateSlot("keys") { $0.paths = (found.keys ?? Self.defaultKeys).map { [$0] } ?? []; $0.problem = "" }
         if !found.anyGame {
             updateSlot("base") { $0.problem = "data.noNsp" }
         }

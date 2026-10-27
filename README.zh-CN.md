@@ -290,6 +290,13 @@ python3 -m pip install lz4 capstone fonttools backports.zstd
 python3 scripts/build_ipa_from_nsp.py ~/Games/Hades2 -k ~/keys/prod.keys
 ```
 
+想一劳永逸，就把文件（或指向它的符号链接）放到 `~/.switch/prod.keys`，hactool、nsz 和模拟器也读这里。
+之后脚本不用再加 `-k`，游戏文件夹里没有 prod.keys 时，NS Port Builder 也会自动填上它：
+
+```bash
+mkdir -p ~/.switch && ln -sf ~/keys/prod.keys ~/.switch/prod.keys
+```
+
 密钥的导出方式在 Switch 自制软件社区有完整文档（常见做法是在破解机上跑 Lockpick_RCM）；
 本仓库不涉及也不携带这一步。两条来自真实导出文件的实用提示：
 

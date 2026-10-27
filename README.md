@@ -293,6 +293,14 @@ Where to put it is up to you; you pass the path with `-k`:
 python3 scripts/build_ipa_from_nsp.py ~/Games/Hades2 -k ~/keys/prod.keys
 ```
 
+To set it once for good, put the file (or a symlink to it) at `~/.switch/prod.keys`, where
+hactool, nsz and the emulators look too. The script then needs no `-k`, and NS Port Builder
+fills its prod.keys row from it whenever the game folder holds none of its own:
+
+```bash
+mkdir -p ~/.switch && ln -sf ~/keys/prod.keys ~/.switch/prod.keys
+```
+
 How keys are dumped is documented across the Switch homebrew community (Lockpick_RCM from a
 hacked console is the usual route); this repository does not cover that step and ships none of
 it. Two practical notes from real dumps:
