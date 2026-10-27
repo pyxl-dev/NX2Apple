@@ -35,6 +35,10 @@ mem_stack	0x10000000
 app_pool	0xCD500000
 sys_resource	0x1000000
 
+# ---- Pipeline prebuild ----
+# The game sets nvnDeviceSetDepthMode to near=0 before its first frame ("[nvn] depth mode near=0" in the log)
+depth_mode	zero
+
 # ---- Shader split (shader_split.py; data.arc's current files, smash_arc.py) ----
 shader_groups	/data.arc/SHDR=shdr /data.arc/EFFN=effect /data.arc/SARC=ui
 shader_note	Super Smash Bros. Ultimate shaders
