@@ -873,7 +873,10 @@ def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote t
 
 def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs are checked by the caller (build_mismatch)
     dst, marker, log = ex / name, g.get('romfs_marker'), logs / f'extract_{name}.log'
-    try: reusable = (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS.img').is_file() and not (dst / 'RomFS').exists() and (rfs.source(dst) / marker).exists()
+    # Keyed by the NSPs it came from, not only by the version: two dumps can carry the same version number with other builds (Super Smash Bros. Ultimate's 13.0.2 and 13.0.5, both v2031616)
+    kf = dst.with_name(name + '.key')
+    key = fingerprint(*[(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in (base, upd) if p])
+    try: reusable = (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS.img').is_file() and not (dst / 'RomFS').exists() and (rfs.source(dst) / marker).exists() and reused(kf, key) is not None
     except (OSError, ValueError, struct.error): reusable = False
     if reusable:
         PROG.stage(f'extract {name}')
@@ -885,8 +888,10 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs 
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
     PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
+    kf.unlink(missing_ok=True)
     run([nx, keys, base, upd or '-', tmp, '--romfs-image'] + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     swap_in(tmp, dst)
+    kf.write_text(key + '\n')
     n, b = extracted(log) or (0, 0)
     PROG.end(f'{n:,} files, {amount(b, "B")}')
     return dst

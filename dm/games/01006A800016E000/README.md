@@ -42,6 +42,7 @@ No `pad_layout` key (the iPhone pad starts in the 3D layout).
 
 - The RomFS is one `data.arc` (17.6 GB; the profile's `romfs_marker`) beside 14 NRRs. Its header (magic `0xABCDEF9876543210`) gives the offsets of the music, file and shared-file sections and of the file system table (one zstd frame of 50 MB); paths are Hash40s (CRC-32 of the path, its length in the top byte). A path leads to its current file through its info index, file info, info-to-data entry and file data, at file section + directory offset + 4 × its offset, zstd or stored (`dm/gfx/tools/smash_arc.py` documents the layout) ([01, Compressed RomFS content](../../../docs/agents/01-extract.md#compressed-romfs-content)).
 - The archive also keeps every earlier version of updated files, which no path leads to any more: 183,882 data blobs, 169,939 of them current (the 98 fighter NROs, 764 with their old versions, which the NRRs of older releases still list). A file's first bytes name its format: SSBH `HBSS` resources (`RDHS` shader databases, `XFUN` effect libraries, `LDOM` / `HSEM` / `LTAM` / `MINA` / `LEKS` models, meshes, materials, animations, skeletons), `EFFN` effects, `SARC` UI layouts, `BNTX`, `NUS3` sound and the NROs (`NRO0` at +0x10).
+- **Resolved: a dump labelled 13.0.2 packed as if it were 13.0.5.** It is `v2031616` too (display version 13.0.2), with another `main` build (`cbd5a9b56ea859ba11ca069b19b66610`) and the same `sdk` and `subsdk0` builds. Packed from a derived profile, the game ran without the 62 GB region cut and aborted in its static initialisers (`Break#1` with `main+0x37c9224` in the backtrace; see [Memory](#memory)). After the 13.0.5 NSP replaced it, the build still reused the 13.0.2 extraction, which was keyed by version alone; it is now keyed by its input files too ([Another dump of the same version reuses the previous extraction](../../../docs/reference/packing.md#another-dump-of-the-same-version-reuses-the-previous-extraction)).
 - Shaders: 35,012 (22,197 vertex, 12,761 pixel, 53 compute, 1 geometry): GLSLC outputs in the 41 SSBH shader databases (`.nushdb`, 7,764), BNSH in the effects (`EFFN`, 26,419) and UI layouts (SARC, 752), and 77 in `main`. The split reads `data.arc`'s current files (`shader_split.py` `smash_arc_jobs`).
 
 ## Mac routes
@@ -60,5 +61,6 @@ General host changes first needed here; each applies to every game:
 - **The indexed archive reader** (`smash_arc.py`, `smash_arc_jobs`): [01, Compressed RomFS content](../../../docs/agents/01-extract.md#compressed-romfs-content).
 
 ## Open
+- **The extraction keyed by the files it came from** (`extract/v<version>.key`): [Another dump of the same version reuses the previous extraction](../../../docs/reference/packing.md#another-dump-of-the-same-version-reuses-the-previous-extraction).
 
 - The one geometry shader among the 35,012: whether it builds is not recorded.
