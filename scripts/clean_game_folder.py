@@ -2,7 +2,8 @@
 # Frees space in a game's NSP folder by moving what nxnative does not need to the Trash (never deletes: emptying the Trash is the user's call).
 # A packed Mac app (<name>.app) is self-contained: the launcher, the host, the RomFS, the shader libraries, the DLC and the rewritten modules are inside it,
 # and its save and log live in ~/Library (dm/mac/launcher.c). Three levels, each including the one before:
-#   junk  download leftovers (*.html, *.url, *.nfo, readme*.txt, _junk/), .zip archives whose game files sit beside them, a stray <title ID>_build
+#   junk  download leftovers (*.html, *.url, *.nfo, readme*.txt, _junk/), archives (.zip, .rar, .7z, with their other volumes) whose game files sit
+#         beside them or in the folder named after them, a stray <title ID>_build
 #         beside the work folder the Mac front end uses (game_build), and a work folder's tmp/. Nothing a build or the game reads.
 #   work  also the work folder's extract/ and nsp/: the next build extracts them again from the NSPs (about a minute). shader/, pso/, patched_*/ stay,
 #         since they are what makes a rebuild fast. The RomFS inside an app is an APFS clone of extract/ when both are on one volume, so trashing extract/
@@ -13,12 +14,14 @@
 # folder, since the NSP script reads only that level and NS Port Builder takes only the update and DLC beside the base game. Of several copies of one title ID the
 # one the build would take stays (highest [v] version, then largest) and the others go to the Trash, as do the subfolders left without a game file, an app or a
 # work folder (download leftovers). Paths in NS Port Builder's library (library.json) follow the moves. Moves are renames on one volume: the build's reuse keys
-# hold file names, sizes and times, not paths, so nothing is extracted again.
+# hold file names, sizes and times, not paths, so nothing is extracted again. Before that, an archive holding a game file that is nowhere in the game folder is
+# unpacked into the folder named after it (with 7zz or 7z from Homebrew's sevenzip, else macOS's bsdtar; a password in the archive's comment, as download sites
+# leave one, is tried when none works), so the files are gathered and the archive goes with the junk.
 # Usage: python3 scripts/clean_game_folder.py <game folder>... [--level junk|work|app] [--gather] [--each] [--apply]
 #   One game per folder; --each takes every subfolder of the folders given as one game (a library folder). Without --apply it only lists what would go.
 #   Stops when a build is running (build_ipa_from_nsp.py, which NS Port Builder runs too); --gather --apply also stops while NS Port Builder or a game is open.
 #   Exit code 0 on success, 1 on error.
-import argparse, json, os, re, subprocess, sys, zipfile
+import argparse, json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 LEVELS = ('junk', 'work', 'app')
@@ -41,12 +44,55 @@ def is_app(p):   # a packed Mac app with its game data (the launcher refuses one
     r = p / 'Contents/Resources'
     return p.suffix == '.app' and (p / 'Contents/MacOS/dmhost').is_file() and (r / 'dm').is_dir() and ((r / 'romfs.img').is_file() or (r / 'romfs').is_dir())
 
-def extracted_zip(z):   # a .zip whose game files are all beside it already, or in the folder it was extracted to (<name>/ beside <name>.zip)
-    try:
-        names = [Path(n).name for n in zipfile.ZipFile(z).namelist() if Path(n).suffix.lower() in GAME_FILES]
-    except (zipfile.BadZipFile, OSError):
-        return False
-    return bool(names) and all((z.parent / n).exists() or (z.with_suffix('') / n).exists() for n in names)
+ARCHIVES = ('.zip', '.rar', '.7z')
+SEVENZIP = shutil.which('7zz') or shutil.which('7z') or next((t for t in ('/opt/homebrew/bin/7zz', '/usr/local/bin/7zz') if os.access(t, os.X_OK)), None)
+LISTED = {}
+
+def is_archive(p):   # the first volume of an archive (a .partN.rar other than part1 is a later volume)
+    m = re.search(r'\.part(\d+)\.rar$', p.name, re.I)
+    return p.is_file() and p.suffix.lower() in ARCHIVES and not (m and int(m.group(1)) != 1)
+
+def volumes(a):   # the archive and its other volumes: name.part2.rar ..., name.r00 ..., name.z01 ..., name.7z.001 ...
+    m = re.match(r'(.*)\.part\d+\.rar$', a.name, re.I)
+    pat = re.compile(re.escape(m.group(1)) + r'\.part\d+\.rar$' if m else re.escape(a.stem) + r'\.(r|z)\d\d$|' + re.escape(a.name) + r'\.\d{3}$', re.I)
+    return [a] + sorted(p for p in a.parent.iterdir() if p != a and pat.match(p.name))
+
+def listing(a):   # (passwords to try, [(game file name, size)]) of an archive, or None when it cannot be read; the comment's password is tried after none
+    if a in LISTED: return LISTED[a]
+    def run(pw):
+        if SEVENZIP:
+            r = subprocess.run([SEVENZIP, 'l', '-slt', '-p' + pw, str(a)], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode: return None, r.stdout
+            files, cur = [], {}
+            for line in r.stdout.splitlines() + ['']:
+                if line.startswith(('Path = ', 'Size = ', 'Folder = ')): k, _, v = line.partition(' = '); cur[k] = v
+                elif not line and cur:
+                    if cur.get('Folder') != '+' and 'Size' in cur and Path(cur.get('Path', '')).suffix.lower() in GAME_FILES: files.append((Path(cur['Path']).name, int(cur['Size'])))
+                    cur = {}
+            return files, r.stdout
+        r = subprocess.run(['bsdtar', '-tvf', str(a)] + (['--passphrase', pw] if pw else []), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if r.returncode: return None, r.stdout + r.stderr
+        files = [(Path(m.group(2)).name, int(m.group(1))) for m in (re.match(r'\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.*)$', l) for l in r.stdout.splitlines()) if m and Path(m.group(2)).suffix.lower() in GAME_FILES]
+        return files, r.stdout
+    files, out = run('')
+    hint = re.search(r'password[^:\n]*:\s*(\S+)', out, re.I)
+    if not files and hint and (f := run(hint.group(1))[0]): files = f   # encrypted names (7z, rar)
+    LISTED[a] = None if files is None else ([''] + ([hint.group(1)] if hint else []), files)   # a zip lists its names without its password
+    return LISTED[a]
+
+def extracted(a):   # an archive whose game files are all beside it already, or in the folder it was extracted to (<name>/ beside <name>.zip)
+    l = listing(a)
+    return bool(l and l[1]) and all((a.parent / n).exists() or (a.parent / a.stem / n).exists() for n, _ in l[1])
+
+def unpack(a, pws):   # into <name>/ beside the archive, through <name>.partial/ so a stopped extraction is never taken for a whole one
+    dst = a.parent / a.stem
+    while dst.exists(): dst = dst.with_name(dst.name + ' (unpacked)')
+    tmp = dst.with_name(dst.name + '.partial')
+    for pw in pws:
+        shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir()
+        cmd = [SEVENZIP, 'x', '-y', '-p' + pw, '-o' + str(tmp), str(a)] if SEVENZIP else ['bsdtar', '-xf', str(a), '-C', str(tmp)] + (['--passphrase', pw] if pw else [])
+        if subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True).returncode == 0: tmp.rename(dst); return
+    shutil.rmtree(tmp, ignore_errors=True); sys.exit(f'error: could not unpack {a} (damaged, or a password that is not in its comment)')
 
 def walk(game):   # every path in the game folder, without going into .app bundles or work folders (hundreds of thousands of files)
     for root, dirs, files in os.walk(game):
@@ -64,7 +110,7 @@ def junk(game):
         n = p.name.lower()
         if p.is_dir() and n == '_junk': out.append(p)
         elif p.is_file() and (p.suffix.lower() in JUNK_SUFFIXES or (n.startswith('readme') and p.suffix.lower() == '.txt')): out.append(p)
-        elif p.is_file() and p.suffix.lower() == '.zip' and extracted_zip(p): out.append(p)
+        elif is_archive(p) and extracted(p): out += volumes(p)
     for w in work_folders(game):
         if w.name != 'game_build' and (w.parent / 'game_build').is_dir(): out.append(w)   # a run without --work-dir game_build left it
         elif (w / 'tmp').is_dir(): out.append(w / 'tmp')
@@ -166,6 +212,18 @@ def main():
         sys.exit('error: NS Port Builder or a game is open; quit it first (it rewrites library.json, and an open app must not move)')
     total = 0
     for g in games if args.gather else ():
+        have = {p.name for p in walk(g) if p.is_file()}
+        todo = [(x, l) for x in walk(g) if is_archive(x) and (l := listing(x)) is not None and any(n not in have for n, _ in l[1])]
+        for x in walk(g):
+            if is_archive(x) and listing(x) is None: print(f'{g}: [RED] cannot read {x.relative_to(g)} (damaged, or a password that is not in its comment)')
+        need = sum(n for _, (_, l) in todo for _, n in l)
+        if todo and need > shutil.disk_usage(g).free - (2 << 30):
+            sys.exit(f'error: unpacking in {g} needs {human(need)} and {human(shutil.disk_usage(g).free)} is free')
+        if todo: print(f'{g}:')
+        for x, (pw, l) in todo:
+            print(f'  {"unpacked" if args.apply else "unpack"}  {x.relative_to(g)}  ({len(l)} game file{"s" if len(l) > 1 else ""}, {human(sum(n for _, n in l))})')
+            if args.apply: unpack(x, pw)
+        if todo and not args.apply: print('  (the unpacked files are gathered with --apply)')
         r = gather(g)
         if r is None: print(f'{g}: more than one game inside, --gather skipped'); continue
         moves, copies, left = r
