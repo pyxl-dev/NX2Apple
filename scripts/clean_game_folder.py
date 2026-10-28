@@ -9,16 +9,23 @@
 #         frees less than its size there.
 #   app   everything except the .app bundles and their .app.key: the game runs as before, but rebuilding it, or adding an update or DLC, needs the
 #         NSPs again. A folder without a complete app is left as it is.
-# Usage: python3 scripts/clean_game_folder.py <game folder>... [--level junk|work|app] [--each] [--apply]
+# --gather first moves the game files (.nsp, .xci, .nsz, .xcz), the .app bundles with their .app.key and the work folders found in subfolders up into the game
+# folder, since the NSP script reads only that level and NS Port Builder takes only the update and DLC beside the base game. Of several copies of one title ID the
+# one the build would take stays (highest [v] version, then largest) and the others go to the Trash, as do the subfolders left without a game file, an app or a
+# work folder (download leftovers). Paths in NS Port Builder's library (library.json) follow the moves. Moves are renames on one volume: the build's reuse keys
+# hold file names, sizes and times, not paths, so nothing is extracted again.
+# Usage: python3 scripts/clean_game_folder.py <game folder>... [--level junk|work|app] [--gather] [--each] [--apply]
 #   One game per folder; --each takes every subfolder of the folders given as one game (a library folder). Without --apply it only lists what would go.
-#   Stops when a build is running (build_ipa_from_nsp.py, which NS Port Builder runs too). Exit code 0 on success, 1 on error.
-import argparse, os, re, subprocess, sys, zipfile
+#   Stops when a build is running (build_ipa_from_nsp.py, which NS Port Builder runs too); --gather --apply also stops while NS Port Builder or a game is open.
+#   Exit code 0 on success, 1 on error.
+import argparse, json, os, re, subprocess, sys, zipfile
 from pathlib import Path
 
 LEVELS = ('junk', 'work', 'app')
 GAME_FILES = ('.nsp', '.xci', '.nsz', '.xcz')
 JUNK_SUFFIXES = ('.html', '.htm', '.url', '.nfo', '.webloc')
 WORK_NAMES = re.compile(r'^(game_build|[0-9A-Fa-f]{16}_build)$')
+LIBRARY = Path.home() / 'Library/Application Support/NS Port Builder/library.json'
 
 def size(p):
     if p.is_symlink() or p.is_file(): return p.lstat().st_size
@@ -34,12 +41,12 @@ def is_app(p):   # a packed Mac app with its game data (the launcher refuses one
     r = p / 'Contents/Resources'
     return p.suffix == '.app' and (p / 'Contents/MacOS/dmhost').is_file() and (r / 'dm').is_dir() and ((r / 'romfs.img').is_file() or (r / 'romfs').is_dir())
 
-def extracted_zip(z):   # a .zip whose game files are all beside it already
+def extracted_zip(z):   # a .zip whose game files are all beside it already, or in the folder it was extracted to (<name>/ beside <name>.zip)
     try:
         names = [Path(n).name for n in zipfile.ZipFile(z).namelist() if Path(n).suffix.lower() in GAME_FILES]
     except (zipfile.BadZipFile, OSError):
         return False
-    return bool(names) and all((z.parent / n).exists() for n in names)
+    return bool(names) and all((z.parent / n).exists() or (z.with_suffix('') / n).exists() for n in names)
 
 def walk(game):   # every path in the game folder, without going into .app bundles or work folders (hundreds of thousands of files)
     for root, dirs, files in os.walk(game):
@@ -79,6 +86,54 @@ def app(game):
             else: out.append(p)
     return out
 
+def title_of(p):   # the title ID in a file name, as the NSP script reads it
+    m = re.search(r'\[([0-9A-Fa-f]{16})\]', p.name)
+    return int(m.group(1), 16) if m else None
+
+def version_of(p):
+    m = re.search(r'\[v(\d+)\]', p.name)
+    return int(m.group(1)) if m else 0
+
+def gather(game):
+    """(moves [(from, to)], extra copies {copy: the kept one}, folders left without game data) for --gather, or None when the folder holds more than one game"""
+    found = list(walk(game))
+    files = [p for p in found if p.is_file() and p.suffix.lower() in GAME_FILES and p.stat().st_size]
+    apps = {(t & ~0xFFF) - 0x1000 if t & 0xFFF not in (0, 0x800) else t & ~0xFFF for t in map(title_of, files) if t is not None}
+    if len(apps) > 1: return None
+    best = {}   # as extract_aoc keeps one copy per DLC: highest version, then largest; a copy already in the game folder wins a tie
+    for p in files:
+        k, t = (version_of(p), p.stat().st_size, p.parent == game), title_of(p)
+        t = p.name if t is None else t
+        if t not in best or k > best[t][0]: best[t] = (k, p)
+    keep = {p for _, p in best.values()}
+    copies = {p: best[p.name if title_of(p) is None else title_of(p)][1] for p in files if p not in keep}
+    bring = [p for p in found if p.parent != game and (p in keep or (p.is_dir() and (p.suffix == '.app' or WORK_NAMES.match(p.name))) or p.name.endswith('.app.key'))]
+    moves, taken = [], {p.name for p in game.iterdir()}
+    for p in bring:
+        if p.name in taken: print(f'{game}: {p.relative_to(game)} stays, {p.name} is already in the game folder'); continue
+        taken.add(p.name); moves.append((p, game / p.name))
+    moved = {p for p, _ in moves} | set(copies)
+    to = dict(moves); copies = {c: to.get(k, k) for c, k in copies.items()}
+    data = lambda p: (p.is_file() and p.suffix.lower() in GAME_FILES) or p.suffix == '.app' or p.name.endswith('.app.key') or WORK_NAMES.match(p.name)
+    left = [d for d in game.iterdir() if d.is_dir() and not d.name.startswith('.') and d.suffix != '.app' and not WORK_NAMES.match(d.name)
+            and not any(data(p) and p not in moved and not any(q in moved for q in p.parents) for p in walk(d))]
+    return moves, copies, left
+
+def relink(moves):   # NS Port Builder's library follows the moves (paths of inputs, apps and output folders; a trashed copy's path becomes the kept one's, a trashed folder the game folder)
+    if not moves or not LIBRARY.is_file(): return
+    pairs = [(str(a), str(b)) for a, b in moves]
+    def fix(v):
+        if isinstance(v, dict): return {k: fix(x) for k, x in v.items()}
+        if isinstance(v, list): return list(dict.fromkeys(map(fix, v))) if all(isinstance(x, str) for x in v) else [fix(x) for x in v]
+        if isinstance(v, str):
+            for a, b in pairs:
+                if v == a or v.startswith(a + '/'): return b + v[len(a):]
+        return v
+    old = json.loads(LIBRARY.read_text()); new = fix(old)
+    if new == old: return
+    tmp = LIBRARY.with_suffix('.json.tmp'); tmp.write_text(json.dumps(new)); tmp.replace(LIBRARY)
+    print(f'updated {LIBRARY}')
+
 def plan(game, level):
     items = junk(game)
     if level in ('work', 'app'): items += work(game)
@@ -95,6 +150,7 @@ def main():
     ap = argparse.ArgumentParser(description='Move what nxnative does not need from game folders to the Trash.')
     ap.add_argument('folders', nargs='+', type=Path, help='game folders (one game each), or library folders with --each')
     ap.add_argument('--level', choices=LEVELS, default='junk', help='junk (default), work or app; see the top of this file')
+    ap.add_argument('--gather', action='store_true', help='first move game files, apps and work folders from subfolders up into the game folder')
     ap.add_argument('--each', action='store_true', help='take every subfolder of the folders given as one game')
     ap.add_argument('--apply', action='store_true', help='move the files to the Trash (default: only list them)')
     args = ap.parse_args()
@@ -103,9 +159,34 @@ def main():
         f = f.expanduser().resolve()
         if not f.is_dir(): sys.exit(f'error: {f} is not a folder')
         games += sorted(d for d in f.iterdir() if d.is_dir() and not d.name.startswith('.')) if args.each else [f]
-    if args.apply and subprocess.run(['pgrep', '-f', 'build_ipa_from_nsp'], capture_output=True).returncode == 0:
+    running = lambda pat: subprocess.run(['pgrep', '-f', pat], capture_output=True).returncode == 0
+    if args.apply and running('build_ipa_from_nsp'):
         sys.exit('error: a build is running (build_ipa_from_nsp.py); clean once it has finished')
+    if args.apply and args.gather and (running('NS Port Builder') or running('NSPortBuilder') or running('Contents/MacOS/dmhost')):
+        sys.exit('error: NS Port Builder or a game is open; quit it first (it rewrites library.json, and an open app must not move)')
     total = 0
+    for g in games if args.gather else ():
+        r = gather(g)
+        if r is None: print(f'{g}: more than one game inside, --gather skipped'); continue
+        moves, copies, left = r
+        if not (moves or copies or left): continue
+        print(f'{g}:')
+        groups = {}
+        for a, _ in moves: groups.setdefault(a.parent, []).append(a)
+        for d, ps in sorted(groups.items()):
+            files = [x for x in ps if x.is_file() and x.suffix.lower() in GAME_FILES]
+            if files: print(f'  {"moved" if args.apply else "move"} up  {len(files)} game file{"s" if len(files) > 1 else ""} from {d.relative_to(g)}/')
+            for x in sorted(set(ps) - set(files)): print(f'  {"moved" if args.apply else "move"} up  {x.relative_to(g)}{"/" if x.is_dir() else ""}')
+        trash = sorted({*copies, *left}); trash = [p for p in trash if not any(q in p.parents for q in trash)]
+        for p in copies: print(f'  {human(size(p)):>9}  {p.relative_to(g)}  (another copy of this title is kept)')
+        for p in trash:
+            n = size(p) - sum(size(a) for a, _ in moves if p in a.parents); total += n   # what is left once the game data moved out
+            if p not in copies: print(f'  {human(n):>9}  {p.relative_to(g)}/')
+        if args.apply:
+            for a, b in moves: a.rename(b)
+            relink(moves + list(copies.items()) + [(d, g) for d in left])   # moves first: a path inside a trashed folder that moved keeps its name
+            if trash and subprocess.run(['/usr/bin/trash', *map(str, trash)]).returncode:
+                sys.exit(f'error: /usr/bin/trash failed in {g}')
     for g in games:
         items = plan(g, args.level)
         if not items: continue
