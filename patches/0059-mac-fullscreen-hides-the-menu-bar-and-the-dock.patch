@@ -12,7 +12,7 @@ Ctrl-Cmd-F still work without the bar shown.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
-Upstream-Status: pending
+Upstream-Status: forwarded seedds/nxnative#2850
 Reason: macOS 27 with two screens shows the menu bar over the fullscreen game while it is the active app
 Issue: pyxl-dev/NX2Apple#1
 
